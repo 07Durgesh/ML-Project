@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import re
 from datetime import datetime, timedelta
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -77,7 +78,6 @@ class EntityMatcher:
         self.processor = processor
         self.vectorizer = TfidfVectorizer()
 
-    # 1. STANDARD SEARCH (TF-IDF)
     def find_best_match_sql(self, user_query, table, columns):
         conn = get_db_connection()
         rows = conn.execute(f"SELECT * FROM {table}").fetchall()
@@ -99,19 +99,14 @@ class EntityMatcher:
         cosine_scores = cosine_similarity(query_vec, candidate_vecs).flatten()
         best_idx = np.argmax(cosine_scores)
         
-        # Higher threshold for TF-IDF to avoid bad guesses
         if cosine_scores[best_idx] > 0.2:
             return rows[best_idx], cosine_scores[best_idx]
         
-        # --- SEMANTIC AI FALLBACK ---
-        # If math fails (e.g., "ML" vs "Artificial Intelligence"), ask the AI
         return self.find_semantic_match_ai(user_query, rows, columns)
 
-    # 2. SEMANTIC SEARCH (AI-POWERED)
     def find_semantic_match_ai(self, user_query, rows, columns):
         if not model: return None, 0
         
-        # Create a readable list for the AI
         options = [f"{i}: " + " ".join([str(row[col]) for col in columns if row[col]]) for i, row in enumerate(rows)]
         options_str = "\n".join(options)
         
@@ -125,7 +120,7 @@ class EntityMatcher:
             response = model.generate_content(prompt)
             index = int(response.text.strip())
             if index != -1 and 0 <= index < len(rows):
-                return rows[index], 0.9 # High confidence since AI picked it
+                return rows[index], 0.9
         except:
             pass
             
@@ -159,22 +154,21 @@ class UniversityChatbot:
         self.intent_classifier = IntentClassifier(self.processor)
         self.entity_matcher = EntityMatcher(self.processor)
 
-    # --- AI HELPER: DATA EXTRACTION ---
+    # --- AI HELPER ---
     def extract_data_with_ai(self, message, extraction_type):
         if not model: return None
-        
         today_str = datetime.now().strftime('%Y-%m-%d')
         
         if extraction_type == "deadline":
             prompt = (
                 f"Today is {today_str}. Extract task title and due date from: '{message}'. "
-                f"Convert relative dates like 'next Friday' or 'tomorrow' to YYYY-MM-DD format. "
-                f"Return ONLY a JSON object: {{'title': 'Task Name', 'date': 'YYYY-MM-DD'}}."
+                f"Convert relative dates like 'next Friday' to YYYY-MM-DD. "
+                f"Return ONLY JSON: {{'title': 'Task Name', 'date': 'YYYY-MM-DD'}}."
             )
         elif extraction_type == "task_name":
             prompt = (
                 f"Extract the task name to be marked as done from: '{message}'. "
-                f"Return ONLY a JSON object: {{'title': 'Task Name'}}."
+                f"Return ONLY JSON: {{'title': 'Task Name'}}."
             )
         
         try:
@@ -190,17 +184,28 @@ class UniversityChatbot:
                 raise Exception("Missing API Key")
             
             prompt = (
-                f"You are 'BU Buddy'. Answer based on this data: {context_data}. "
-                f"Be concise. If asked for specific details (like office), only give that. "
-                f"Fix spelling. User Question: {user_query}"
+                f"You are 'BU Buddy'. Answer based on: {context_data}. "
+                f"Be concise. Fix spelling. User Question: {user_query}"
             )
             response = model.generate_content(prompt)
             return response.text
         except:
             return f"Here is the information I found:\n\n{context_data}"
 
-    # --- LOGIC HANDLERS ---
+    # --- IMPROVED LOGIC HANDLERS ---
     def add_deadline_logic(self, message):
+        # 1. FAST PATH: Try Regex first (Robust & Works without API)
+        # This regex handles "Certificationby" typo by allowing flexible spacing around "by"
+        match = re.search(r'add deadline\s+(.+?)\s*by\s*(\d{4}-\d{2}-\d{2})', message, re.IGNORECASE)
+        if match:
+            title, date = match.group(1).strip(), match.group(2)
+            conn = get_db_connection()
+            conn.execute("INSERT INTO deadlines (title, due_date, status) VALUES (?, ?, 'pending')", (title, date))
+            conn.commit()
+            conn.close()
+            return f"✅ Added: **{title}** (Due: {date})"
+
+        # 2. SMART PATH: Try AI if Regex failed
         data = self.extract_data_with_ai(message, "deadline")
         if data and 'title' in data and 'date' in data:
             conn = get_db_connection()
@@ -208,27 +213,40 @@ class UniversityChatbot:
             conn.commit()
             conn.close()
             return f"✅ Added: **{data['title']}** (Due: {data['date']})"
-        return "I couldn't understand the task details. Try: 'Add deadline [Name] by [Date]'."
+        
+        return "I couldn't understand the task details. Try: 'Add deadline [Name] by [YYYY-MM-DD]'."
 
     def mark_deadline_complete(self, message):
-        data = self.extract_data_with_ai(message, "task_name")
-        if data and 'title' in data:
-            query_title = data['title']
+        # 1. FAST PATH: Regex
+        match = re.search(r'mark (.+?) as (done|completed)', message, re.IGNORECASE)
+        query_title = match.group(1).strip() if match else None
+
+        # 2. SMART PATH: AI Extraction
+        if not query_title:
+            data = self.extract_data_with_ai(message, "task_name")
+            if data and 'title' in data:
+                query_title = data['title']
+
+        if query_title:
             conn = get_db_connection()
             rows = conn.execute("SELECT * FROM deadlines").fetchall()
             
-            # Use Semantic Search for this too
-            matcher = EntityMatcher(NLPProcessor())
-            best_row, score = matcher.find_semantic_match_ai(query_title, rows, ['title'])
+            # Simple robust matching
+            target_id, target_title = None, ""
+            for r in rows:
+                if query_title.lower() in r['title'].lower():
+                    target_id, target_title = r['id'], r['title']
+                    break
             
-            if best_row:
-                conn.execute("UPDATE deadlines SET status = 'completed' WHERE id = ?", (best_row['id'],))
+            if target_id:
+                conn.execute("UPDATE deadlines SET status = 'completed' WHERE id = ?", (target_id,))
                 conn.commit()
                 conn.close()
-                return f"🎉 Marked **{best_row['title']}** as completed!"
+                return f"🎉 Marked **{target_title}** as completed!"
             
             conn.close()
             return f"Could not find a task matching '{query_title}'."
+        
         return "Which task would you like to mark as done?"
 
     def get_deadline_status(self, filter_type):
@@ -245,7 +263,6 @@ class UniversityChatbot:
             text += f"{marker} **{r['title']}**: {r['due_date']}\n"
         return text
 
-    # --- MAIN RESPONSE FLOW ---
     def get_response(self, message):
         intent, confidence = self.intent_classifier.predict(message)
         
