@@ -50,7 +50,6 @@ class NLPProcessor:
     def preprocess(self, text):
         text = text.lower()
         tokens = word_tokenize(text)
-        # Remove stop words but keep key entities
         tokens = [self.lemmatizer.lemmatize(t) for t in tokens if t.isalnum() and t not in self.stop_words]
         return " ".join(tokens)
 
@@ -86,7 +85,6 @@ class EntityMatcher:
 
         if not rows: return None, 0
         
-        # Combine all searchable columns into one string per row
         search_candidates = [" ".join([str(row[col]) for col in columns if row[col]]) for row in rows]
         
         processed_query = self.processor.preprocess(user_query)
@@ -101,63 +99,52 @@ class EntityMatcher:
         cosine_scores = cosine_similarity(query_vec, candidate_vecs).flatten()
         best_idx = np.argmax(cosine_scores)
         
-        # If standard math match is decent, return it
         if cosine_scores[best_idx] > 0.2:
             return rows[best_idx], cosine_scores[best_idx]
         
-        # If math match is weak, use AI Semantic Match
         return self.find_semantic_match_ai(user_query, rows, columns)
 
     def find_semantic_match_ai(self, user_query, rows, columns):
         if not model: return None, 0
         
-        # Format rows for AI to read
         options = [f"{i}: " + " ".join([str(row[col]) for col in columns if row[col]]) for i, row in enumerate(rows)]
         options_str = "\n".join(options)
         
         prompt = (
-            f"User Search: '{user_query}'.\n"
-            f"Database Entries:\n{options_str}\n"
-            f"Task: Identify the single best match for the user's search. "
-            f"Even if the user asks for an attribute (e.g., 'Priya office'), match it to the entity 'Priya'.\n"
-            f"Return ONLY the index number. If no match, return -1."
+            f"User is searching for: '{user_query}'.\n"
+            f"Match it to one of these database entries:\n{options_str}\n"
+            f"Return ONLY the index number of the best match. If unsure, return -1."
         )
         
         try:
             response = model.generate_content(prompt)
             index = int(response.text.strip())
             if index != -1 and 0 <= index < len(rows):
-                return rows[index], 0.95 # High confidence for AI match
+                return rows[index], 0.9
         except:
             pass
             
         return None, 0
 
-    # --- GLOBAL SEARCH (The Fix for "Random" queries) ---
     def global_search(self, user_query):
-        # Define all search spaces
         tables_to_search = [
             ('professors', ['name', 'specialization', 'dept', 'office']),
             ('courses', ['name', 'code', 'dept']),
-            ('locations', ['name', 'building', 'hours'])
+            ('locations', ['name', 'building'])
         ]
         
         best_match = None
         best_score = 0
         best_table = ""
 
-        # Iterate through ALL tables to find the best semantic match
         for table, columns in tables_to_search:
             row, score = self.find_best_match_sql(user_query, table, columns)
-            
-            # Prioritize higher scores
             if score > best_score:
                 best_score = score
                 best_match = row
                 best_table = table
 
-        # Accept if confidence is reasonable
-        if best_score > 0.25:
+        if best_score > 0.2:
             return best_match, best_table
         return None, None
 
@@ -167,15 +154,15 @@ class UniversityChatbot:
         self.intent_classifier = IntentClassifier(self.processor)
         self.entity_matcher = EntityMatcher(self.processor)
 
-    # --- AI HELPERS ---
+    # --- AI HELPER ---
     def extract_data_with_ai(self, message, extraction_type):
         if not model: return None
         today_str = datetime.now().strftime('%Y-%m-%d')
         
         if extraction_type == "deadline":
             prompt = (
-                f"Current Date: {today_str}. Extract task title and due date from: '{message}'. "
-                f"Convert relative dates (tomorrow, next friday) to YYYY-MM-DD. "
+                f"Today is {today_str}. Extract task title and due date from: '{message}'. "
+                f"Convert relative dates to YYYY-MM-DD. "
                 f"Return ONLY JSON: {{'title': 'Task Name', 'date': 'YYYY-MM-DD'}}."
             )
         elif extraction_type == "task_name":
@@ -193,15 +180,9 @@ class UniversityChatbot:
             if "YOUR_API_KEY" in GOOGLE_API_KEY or not model: 
                 raise Exception("Missing API Key")
             
-            # CONTEXT AWARE PROMPT
             prompt = (
-                f"You are 'BU Buddy'. I found this data matching the user's query: {context_data}. "
-                f"Answer the User's Question: '{user_query}'. "
-                f"IMPORTANT RULES:\n"
-                f"1. If the user asked for a specific detail (e.g., 'Priya email'), ONLY provide that detail.\n"
-                f"2. If the user asked 'who is', provide the full bio.\n"
-                f"3. Fix spelling errors in the data.\n"
-                f"4. Use **bold** for key terms."
+                f"You are 'BU Buddy'. Answer based on: {context_data}. "
+                f"Be concise. Fix spelling. User Question: {user_query}"
             )
             response = model.generate_content(prompt)
             return response.text
@@ -210,7 +191,6 @@ class UniversityChatbot:
 
     # --- LOGIC HANDLERS ---
     def add_deadline_logic(self, message):
-        # Regex Fast Path
         match = re.search(r'add deadline\s+(.+?)\s*by\s*(\d{4}-\d{2}-\d{2})', message, re.IGNORECASE)
         if match:
             title, date = match.group(1).strip(), match.group(2)
@@ -220,7 +200,6 @@ class UniversityChatbot:
             conn.close()
             return f"✅ Added: **{title}** (Due: {date})"
 
-        # AI Path
         data = self.extract_data_with_ai(message, "deadline")
         if data and 'title' in data and 'date' in data:
             conn = get_db_connection()
@@ -228,7 +207,8 @@ class UniversityChatbot:
             conn.commit()
             conn.close()
             return f"✅ Added: **{data['title']}** (Due: {data['date']})"
-        return "I couldn't understand. Try 'Add deadline [Task] by [Date]'."
+        
+        return "I couldn't understand the task details. Try: 'Add deadline [Name] by [Date]'."
 
     def mark_deadline_complete(self, message):
         match = re.search(r'mark (.+?) as (done|completed)', message, re.IGNORECASE)
@@ -252,8 +232,8 @@ class UniversityChatbot:
                 conn.close()
                 return f"🎉 Marked **{target_title}** as completed!"
             conn.close()
-            return f"Could not find task '{query_title}'."
-        return "Which task should I mark as done?"
+            return f"Could not find a task matching '{query_title}'."
+        return "Which task would you like to mark as done?"
 
     def get_deadline_status(self, filter_type):
         conn = get_db_connection()
@@ -280,15 +260,37 @@ class UniversityChatbot:
 
         context_info = None
         
-        # 1. Attempt Specific Search based on Intent
-        if intent == 'syllabus':
-            row, score = self.entity_matcher.find_best_match_sql(message, 'courses', ['code', 'name'])
-            if row:
+        # --- 1. PROFESSOR LOGIC (Updated with List Handler) ---
+        if intent == 'professor':
+            # Check if user wants a list (all/list/everyone)
+            if any(x in message.lower() for x in ['list', 'all', 'everyone', 'show']):
                 conn = get_db_connection()
-                syl = conn.execute("SELECT * FROM syllabus WHERE course_code=?", (row['code'],)).fetchone()
+                rows = conn.execute("SELECT name, dept FROM professors").fetchall()
                 conn.close()
-                if syl: return {'response': f"Here is the Syllabus PDF for **{row['name']}**.", 'data': {'pdf_url': syl['pdf_url']}}
-                context_info = f"Course {row['name']} found, but PDF is missing."
+                if rows:
+                    context_info = "Here is the list of Professors:\n" + "\n".join([f"- **{r['name']}** ({r['dept']})" for r in rows])
+            else:
+                # Specific Search
+                row, score = self.entity_matcher.find_best_match_sql(message, 'professors', ['name', 'specialization', 'dept'])
+                if row: 
+                    context_info = f"Name: {row['name']}, Office: {row['office']}, Email: {row['email']}, Spec: {row['specialization']}"
+
+        # --- 2. SYLLABUS LOGIC (Updated with List Handler) ---
+        elif intent == 'syllabus':
+            if any(x in message.lower() for x in ['list', 'all', 'courses']):
+                conn = get_db_connection()
+                rows = conn.execute("SELECT name, code FROM courses").fetchall()
+                conn.close()
+                if rows:
+                    context_info = "Here are the available courses:\n" + "\n".join([f"- **{r['name']}** ({r['code']})" for r in rows])
+            else:
+                row, score = self.entity_matcher.find_best_match_sql(message, 'courses', ['code', 'name'])
+                if row:
+                    conn = get_db_connection()
+                    syl = conn.execute("SELECT * FROM syllabus WHERE course_code=?", (row['code'],)).fetchone()
+                    conn.close()
+                    if syl: return {'response': f"Here is the Syllabus PDF for **{row['name']}**.", 'data': {'pdf_url': syl['pdf_url']}}
+                    context_info = f"Course {row['name']} found, but PDF is missing."
         
         elif intent == 'pyq':
             row, score = self.entity_matcher.find_best_match_sql(message, 'courses', ['code', 'name'])
@@ -298,22 +300,16 @@ class UniversityChatbot:
                 conn.close()
                 if pyq: return {'response': f"Here is the PYQ for **{row['name']}**.", 'data': {'pdf_url': pyq['pdf_url']}}
 
-        elif intent == 'professor':
-            row, score = self.entity_matcher.find_best_match_sql(message, 'professors', ['name', 'specialization', 'dept'])
-            if row: 
-                context_info = f"Name: {row['name']}, Office: {row['office']}, Email: {row['email']}, Spec: {row['specialization']}"
-
         elif intent == 'location':
             row, score = self.entity_matcher.find_best_match_sql(message, 'locations', ['name', 'building'])
             if row: context_info = f"Location: {row['name']} is in {row['building']} (Floor {row['floor']})."
 
-        # 2. GLOBAL FALLBACK (The "Fix" for Random Queries)
-        # If specific search failed, search EVERYTHING using Semantic AI
+        # --- 3. GLOBAL FALLBACK ---
         if not context_info:
             row, table_name = self.entity_matcher.global_search(message)
             if row:
                 if table_name == 'professors':
-                    context_info = f"Found Professor: {row['name']}, Office: {row['office']}, Email: {row['email']}, Dept: {row['dept']}"
+                    context_info = f"Found Professor: {row['name']}, Office: {row['office']}, Email: {row['email']}"
                 elif table_name == 'courses':
                      context_info = f"Found Course: {row['name']} ({row['code']}). Credits: {row['credits']}."
                 elif table_name == 'locations':
@@ -322,4 +318,4 @@ class UniversityChatbot:
         if context_info:
             return {'response': self.generate_ai_response(message, context_info), 'data': None}
 
-        return {'response': "I couldn't find that info. Please check the spelling or try rephrasing.", 'data': None}
+        return {'response': "I couldn't find that info. Please try rephrasing.", 'data': None}
