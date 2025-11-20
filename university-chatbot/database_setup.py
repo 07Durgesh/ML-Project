@@ -1,24 +1,33 @@
 import sqlite3
-import random
-from datetime import datetime, timedelta
+from datetime import datetime
+import os
 
-def create_database():
-    conn = sqlite3.connect('university.db')
-    cursor = conn.cursor()
+DB_FILE = "university.db"
 
-    # --- 1. CREATE TABLES ---
-    cursor.execute('''
+# ===============================
+# 1. CREATE TABLES
+# ===============================
+def create_tables(conn):
+    cur = conn.cursor()
+
+    # Enable foreign keys
+    cur.execute("PRAGMA foreign_keys = ON;")
+
+    # courses table now includes an assigned_professor column (TEXT)
+    cur.execute('''
     CREATE TABLE IF NOT EXISTS courses (
         code TEXT PRIMARY KEY,
         name TEXT,
         credits INTEGER,
-        dept TEXT
+        dept TEXT,
+        assigned_professor TEXT
     )
     ''')
 
-    cursor.execute('''
+    cur.execute('''
     CREATE TABLE IF NOT EXISTS professors (
-        name TEXT,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
         email TEXT,
         dept TEXT,
         office TEXT,
@@ -26,28 +35,30 @@ def create_database():
     )
     ''')
 
-    cursor.execute('''
+    cur.execute('''
     CREATE TABLE IF NOT EXISTS syllabus (
-        course_code TEXT,
+        course_code TEXT PRIMARY KEY,
         content TEXT,
         topics TEXT,
         pdf_url TEXT,
-        FOREIGN KEY(course_code) REFERENCES courses(code)
+        FOREIGN KEY(course_code) REFERENCES courses(code) ON DELETE CASCADE
     )
     ''')
 
-    cursor.execute('''
+    cur.execute('''
     CREATE TABLE IF NOT EXISTS pyqs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         course_code TEXT,
         year TEXT,
         semester TEXT,
         pdf_url TEXT,
-        FOREIGN KEY(course_code) REFERENCES courses(code)
+        FOREIGN KEY(course_code) REFERENCES courses(code) ON DELETE CASCADE
     )
     ''')
 
-    cursor.execute('''
+    cur.execute('''
     CREATE TABLE IF NOT EXISTS locations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
         building TEXT,
         floor INTEGER,
@@ -55,7 +66,7 @@ def create_database():
     )
     ''')
 
-    cursor.execute('''
+    cur.execute('''
     CREATE TABLE IF NOT EXISTS deadlines (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT,
@@ -65,122 +76,162 @@ def create_database():
     )
     ''')
 
-    # --- 2. GENERATE VAST DATA (500+ Entries) ---
-    
-    print("Generating vast dataset...")
-
-    # -- Data Pools --
-    departments = ['Computer Science', 'Mathematics', 'Physics', 'Mechanical Eng', 'Electrical Eng', 'Business', 'Psychology', 'Chemistry']
-    first_names = ['Vikram', 'Priya', 'Rajesh', 'Amit', 'Sneha', 'Anjali', 'Rahul', 'David', 'Sarah', 'John', 'Emily', 'Michael', 'Robert', 'Linda', 'William', 'Elizabeth', 'Arjun', 'Aditi', 'Kavita', 'Sanjay']
-    last_names = ['Singh', 'Sharma', 'Kumar', 'Patel', 'Gupta', 'Verma', 'Mishra', 'Reddy', 'Nair', 'Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez']
-    course_types = ['Introduction to', 'Advanced', 'Principles of', 'Fundamentals of', 'Applied', 'Theoretical']
-    topics_pool = ['AI', 'Machine Learning', 'Thermodynamics', 'Quantum Mechanics', 'Data Structures', 'Algorithms', 'Calculus', 'Linear Algebra', 'Organic Chemistry', 'Marketing', 'Finance', 'Cognitive Science']
-    buildings = ['Main Block', 'Science Hub', 'Tech Park', 'Library Building', 'Student Center', 'Innovation Lab', 'Admin Block']
-    
-    courses = []
-    professors = []
-    syllabi = []
-    pyqs = []
-    deadlines = []
-    locations = []
-
-    # A. Generate 150 Courses
-    for i in range(150):
-        dept = random.choice(departments)
-        code_prefix = dept[:3].upper()
-        code = f"{code_prefix}{100 + i}"
-        topic = random.choice(topics_pool)
-        prefix = random.choice(course_types)
-        name = f"{prefix} {topic} {i+1}"
-        credits = random.choice([2, 3, 4])
-        courses.append((code, name, credits, dept))
-
-        # B. Generate Syllabus & PYQ for each course (Total 300 entries here)
-        syllabi.append((code, f"Full syllabus for {name}", f"Unit 1-5: {topic} concepts", f"pdfs/{code}_Syllabus.pdf"))
-        pyqs.append((code, str(random.randint(2018, 2024)), random.choice(['Fall', 'Spring']), f"pdfs/{code}_PYQ.pdf"))
-
-    # C. Generate 100 Professors
-    for i in range(100):
-        fname = random.choice(first_names)
-        lname = random.choice(last_names)
-        name = f"Dr. {fname} {lname}"
-        dept = random.choice(departments)
-        email = f"{fname.lower()}.{lname.lower()}@university.edu"
-        office = f"{random.choice(['A', 'B', 'C', 'D'])}-{random.randint(100, 500)}"
-        spec = random.choice(topics_pool)
-        professors.append((name, email, dept, office, spec))
-
-    # D. Generate 100 Deadlines (Past & Future)
-    for i in range(100):
-        topic = random.choice(topics_pool)
-        task_types = ['Assignment', 'Project', 'Lab Report', 'Mid-Term Exam', 'Final Presentation']
-        title = f"{topic} {random.choice(task_types)} {i+1}"
-        
-        # Random date within +/- 60 days
-        days_offset = random.randint(-60, 60)
-        date = (datetime.now() + timedelta(days=days_offset)).strftime('%Y-%m-%d')
-        status = 'completed' if days_offset < 0 else 'pending'
-        
-        deadlines.append((title, f"Submit via portal", date, status))
-
-    # E. Generate 60 Locations
-    location_types = ['Lab', 'Classroom', 'Seminar Hall', 'Cafeteria', 'Office', 'Gym', 'Store']
-    for i in range(60):
-        l_type = random.choice(location_types)
-        name = f"{l_type} {i+101}"
-        building = random.choice(buildings)
-        floor = random.randint(0, 5)
-        hours = "9 AM - 5 PM" if l_type == 'Office' else "8 AM - 10 PM"
-        locations.append((name, building, floor, hours))
-
-    # --- 3. INSERT DATA ---
-    
-    # Clear old data to avoid duplicates on re-run
-    cursor.execute("DELETE FROM courses")
-    cursor.execute("DELETE FROM professors")
-    cursor.execute("DELETE FROM syllabus")
-    cursor.execute("DELETE FROM pyqs")
-    cursor.execute("DELETE FROM deadlines")
-    cursor.execute("DELETE FROM locations")
-
-    cursor.executemany('INSERT OR IGNORE INTO courses VALUES (?,?,?,?)', courses)
-    cursor.executemany('INSERT OR IGNORE INTO professors VALUES (?,?,?,?,?)', professors)
-    cursor.executemany('INSERT OR IGNORE INTO syllabus VALUES (?,?,?,?)', syllabi)
-    cursor.executemany('INSERT OR IGNORE INTO pyqs VALUES (?,?,?,?)', pyqs)
-    cursor.executemany('INSERT OR IGNORE INTO deadlines (title, description, due_date, status) VALUES (?,?,?,?)', deadlines)
-    cursor.executemany('INSERT OR IGNORE INTO locations VALUES (?,?,?,?)', locations)
-
-    # --- 4. ADD SPECIFIC HARDCODED DATA (For Demo Consistency) ---
-    # Ensures your specific demo queries (Priya, Vikram, Web Sec) always work
-    specific_profs = [
-        ('Dr. Vikram Singh', 'vikram.singh@university.edu', 'Computer Science', 'D-401', 'Artificial Intelligence'),
-        ('Prof. Priya Sharma', 'priya.sharma@university.edu', 'Computer Science', 'A-101', 'Data Structures'),
-    ]
-    cursor.executemany('INSERT OR IGNORE INTO professors VALUES (?,?,?,?,?)', specific_profs)
-
-    specific_courses = [
-        ('CSET365', 'Web Security', 3, 'Computer Science'),
-        ('CSET301', 'AI & Machine Learning', 4, 'Computer Science'),
-    ]
-    cursor.executemany('INSERT OR IGNORE INTO courses VALUES (?,?,?,?)', specific_courses)
-    
-    specific_deadlines = [
-        ('ML Assignment 1', 'Neural Networks', '2025-11-28', 'pending'),
-        ('Web Security Project', 'Vuln Scan', '2025-10-20', 'completed')
-    ]
-    cursor.executemany('INSERT OR IGNORE INTO deadlines (title, description, due_date, status) VALUES (?,?,?,?)', specific_deadlines)
-
     conn.commit()
-    
-    # Verification
-    total = 0
-    for table in ['courses', 'professors', 'syllabus', 'pyqs', 'deadlines', 'locations']:
-        count = cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        print(f"{table.capitalize()}: {count} entries")
-        total += count
 
+
+# ===============================
+# 2. SEED DATA (Professors, Courses, Syllabus, PYQs, etc.)
+# ===============================
+def seed_data(conn):
+    cur = conn.cursor()
+
+    # Clear existing rows (fresh seed)
+    cur.execute("DELETE FROM pyqs")
+    cur.execute("DELETE FROM syllabus")
+    cur.execute("DELETE FROM courses")
+    cur.execute("DELETE FROM professors")
+    cur.execute("DELETE FROM locations")
+    cur.execute("DELETE FROM deadlines")
+    conn.commit()
+
+    # -------------------------------
+    # 12 Professors
+    # -------------------------------
+    professors = [
+        ("Dr. Vikram Singh",     "vikram.singh@university.edu", "Computer Science", "D-401", "Artificial Intelligence"),
+        ("Prof. Priya Sharma",   "priya.sharma@university.edu", "Computer Science", "A-101", "Data Structures"),
+        ("Dr. Rajesh Kumar",     "rajesh.kumar@university.edu", "Computer Science", "B-205", "Algorithms"),
+        ("Prof. Neha Verma",     "neha.verma@university.edu", "Mathematics",       "C-110", "Calculus"),
+        ("Dr. Sandeep Reddy",    "sandeep.reddy@university.edu","Electrical Eng",   "E-302", "Signals"),
+        ("Prof. Anjali Mehta",   "anjali.mehta@university.edu", "Mechanical Eng",    "M-210", "Thermodynamics"),
+        ("Dr. Arjun Rao",        "arjun.rao@university.edu",     "Physics",           "P-102", "Quantum Mechanics"),
+        ("Prof. Kavita Gupta",   "kavita.gupta@university.edu",  "Chemistry",         "CH-14", "Organic Chemistry"),
+        ("Dr. Amit Patel",       "amit.patel@university.edu",    "Business",          "BIZ-11","Marketing"),
+        ("Prof. Rahul Joshi",    "rahul.joshi@university.edu",   "Psychology",        "PSY-7", "Cognitive Science"),
+        ("Dr. Emily Johnson",    "emily.johnson@university.edu", "Computer Science",  "CS-220","Web Security"),
+        ("Prof. Robert Brown",   "robert.brown@university.edu",  "Computer Science",  "CS-330","Database Systems"),
+    ]
+
+    cur.executemany(
+        'INSERT INTO professors (name, email, dept, office, specialization) VALUES (?,?,?,?,?)',
+        professors
+    )
+    conn.commit()
+
+    # Fetch list of professors for assignment
+    cur.execute("SELECT name FROM professors ORDER BY id")
+    prof_rows = [r[0] for r in cur.fetchall()]
+
+    # -------------------------------
+    # 25 Courses (with assigned professors)
+    # -------------------------------
+    course_list = [
+        ("CSET301", "AI & Machine Learning", 4, "Computer Science"),
+        ("CSET302", "Data Structures and Algorithms", 4, "Computer Science"),
+        ("CSET303", "Operating Systems", 3, "Computer Science"),
+        ("CSET304", "Database Systems", 3, "Computer Science"),
+        ("CSET305", "Web Security", 3, "Computer Science"),
+        ("MATH201", "Calculus II", 3, "Mathematics"),
+        ("MATH202", "Linear Algebra", 3, "Mathematics"),
+        ("PHYS101", "Physics I", 3, "Physics"),
+        ("PHYS102", "Quantum Mechanics", 3, "Physics"),
+        ("MECH201", "Thermodynamics", 3, "Mechanical Eng"),
+        ("EE201", "Signals and Systems", 3, "Electrical Eng"),
+        ("CHEM101", "Organic Chemistry I", 3, "Chemistry"),
+        ("BUS101", "Principles of Marketing", 3, "Business"),
+        ("PSY101", "Introduction to Cognitive Science", 3, "Psychology"),
+        ("CS350", "Machine Learning Lab", 2, "Computer Science"),
+        ("CS360", "Natural Language Processing", 3, "Computer Science"),
+        ("CS370", "Computer Networks", 3, "Computer Science"),
+        ("CS380", "Software Engineering", 3, "Computer Science"),
+        ("CSET401", "Advanced Algorithms", 3, "Computer Science"),
+        ("CSET402", "Distributed Systems", 3, "Computer Science"),
+        ("CSET403", "Information Retrieval", 3, "Computer Science"),
+        ("EE301", "Digital Electronics", 3, "Electrical Eng"),
+        ("MATH301", "Probability & Statistics", 3, "Mathematics"),
+        ("CS390", "Human-Computer Interaction", 3, "Computer Science"),
+        ("CS395", "Capstone Project", 4, "Computer Science"),
+    ]
+
+    assigned_courses = []
+    for i, c in enumerate(course_list):
+        prof = prof_rows[i % len(prof_rows)]
+        code, name, credits, dept = c
+        assigned_courses.append((code, name, credits, dept, prof))
+
+    cur.executemany(
+        'INSERT INTO courses (code, name, credits, dept, assigned_professor) VALUES (?,?,?,?,?)',
+        assigned_courses
+    )
+    conn.commit()
+
+    # -------------------------------
+    # Syllabus & PYQs
+    # -------------------------------
+    syllabus_rows = []
+    pyq_rows = []
+
+    year_choices = ["2019", "2020", "2021", "2022", "2023", "2024"]
+    sem_choices = ["Fall", "Spring"]
+
+    for code, name, credits, dept, prof in assigned_courses:
+        syl_pdf = f"pdfs/{code}_Syllabus.pdf"
+        pyq_pdf = f"pdfs/{code}_PYQ.pdf"
+
+        syllabus_rows.append(
+            (code, f"Syllabus content for {name}", f"Core topics of {name}", syl_pdf)
+        )
+
+        pyq_rows.append(
+            (code, year_choices[hash(code) % len(year_choices)],
+             sem_choices[hash(code + 'x') % len(sem_choices)],
+             pyq_pdf)
+        )
+
+    cur.executemany('INSERT INTO syllabus (course_code, content, topics, pdf_url) VALUES (?,?,?,?)', syllabus_rows)
+    cur.executemany('INSERT INTO pyqs (course_code, year, semester, pdf_url) VALUES (?,?,?,?)', pyq_rows)
+    conn.commit()
+
+    # -------------------------------
+    # Locations
+    # -------------------------------
+    locations = [
+        ("Library", "Main Block", 2, "8 AM - 10 PM"),
+        ("Cafeteria", "Student Center", 0, "8 AM - 8 PM"),
+        ("Computer Lab 1", "Tech Park", 1, "9 AM - 6 PM"),
+        ("Auditorium", "Main Block", 1, "9 AM - 9 PM"),
+    ]
+
+    cur.executemany('INSERT INTO locations (name, building, floor, hours) VALUES (?,?,?,?)', locations)
+    conn.commit()
+
+    # -------------------------------
+    # Sample Deadlines
+    # -------------------------------
+    deadlines = [
+        ("Submit AI Project", "Submit via LMS", "2025-12-01", "pending"),
+        ("Capstone Proposal", "Upload proposal", "2025-11-25", "pending"),
+    ]
+
+    cur.executemany('INSERT INTO deadlines (title, description, due_date, status) VALUES (?,?,?,?)', deadlines)
+    conn.commit()
+
+    # Verification Print
+    for t in ["courses", "professors", "syllabus", "pyqs", "locations", "deadlines"]:
+        cur.execute(f"SELECT COUNT(*) FROM {t}")
+        print(f"{t}: {cur.fetchone()[0]} entries")
+
+
+# ===============================
+# MAIN ENTRY POINT
+# ===============================
+def main():
+    conn = sqlite3.connect(DB_FILE)
+    create_tables(conn)
+    seed_data(conn)
     conn.close()
-    print(f"\n✅ Success! Database 'university.db' populated with {total} total entries.")
+    print("\n✅ Database setup complete. Place your PDFs inside ./static/pdfs/")
 
-if __name__ == '__main__':
-    create_database()
+
+if __name__ == "__main__":
+    main()
